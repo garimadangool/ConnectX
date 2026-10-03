@@ -1,0 +1,1 @@
+"""FastAPI backend + SQLite persistence (Part 5)."""

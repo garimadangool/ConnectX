@@ -1,0 +1,167 @@
+{
+  "api": {
+    "name": "ConnectX Orders API",
+    "base_url": "https://api.connectx.demo/v1",
+    "format": "JSON",
+    "purpose": "Read-only retrieval of customer and order information from the ConnectX order-management platform.",
+    "auth": {
+      "type": "api_key",
+      "header_name": "X-API-Key",
+      "example": "X-API-Key: YOUR_API_KEY",
+      "sensitivity": "Credentials are sensitive. They must not appear in prompts, outputs, spreadsheets, screenshots, reports, or presentations."
+    },
+    "rate_limit": "Maximum 100 requests per minute. Exceeding this returns a rate-limit error.",
+    "pagination": "List Orders returns a maximum of 50 records per request. Additional pages must be requested explicitly."
+  },
+  "endpoints": [
+    {
+      "id": "get_single_order",
+      "method": "GET",
+      "path": "/orders/{order_id}",
+      "purpose": "Retrieves detailed information about one specific order.",
+      "path_params": [
+        {
+          "name": "order_id",
+          "required": true,
+          "type": "string",
+          "description": "Unique ID of the order",
+          "example": "ORD-10452"
+        }
+      ],
+      "query_params": [],
+      "response_fields": [
+        {"name": "order_id", "type": "string", "description": "Unique order identifier"},
+        {"name": "customer_id", "type": "string", "description": "Customer identifier"},
+        {"name": "created_at", "type": "string", "description": "Order creation timestamp (ISO 8601)"},
+        {"name": "status", "type": "enum", "description": "Order status (see order_status enum)"},
+        {"name": "payment_status", "type": "string", "description": "Payment status (e.g. paid)"},
+        {"name": "total", "type": "number", "description": "Order total amount"},
+        {"name": "currency", "type": "string", "description": "Order currency (e.g. NPR)"},
+        {"name": "items", "type": "array", "description": "Order line items", "nested": [
+          {"name": "product_id", "type": "string"},
+          {"name": "name", "type": "string"},
+          {"name": "quantity", "type": "integer"},
+          {"name": "unit_price", "type": "number"}
+        ]}
+      ],
+      "notes": "Single-record retrieval by known order number."
+    },
+    {
+      "id": "list_orders",
+      "method": "GET",
+      "path": "/orders",
+      "purpose": "Retrieves a list of orders with optional filters. Supports pagination.",
+      "path_params": [],
+      "query_params": [
+        {"name": "start_date", "required": false, "type": "string", "description": "Return orders created on or after this date", "example": "2026-09-01"},
+        {"name": "end_date", "required": false, "type": "string", "description": "Return orders created on or before this date", "example": "2026-09-05"},
+        {"name": "status", "required": false, "type": "enum", "description": "Filter orders by status", "example": "completed"},
+        {"name": "customer_id", "required": false, "type": "string", "description": "Return orders belonging to a specific customer", "example": "CUS-3021"},
+        {"name": "page", "required": false, "type": "integer", "description": "Page number for paginated results", "example": 1},
+        {"name": "limit", "required": false, "type": "integer", "description": "Number of results returned per page (max 50)", "example": 50}
+      ],
+      "response_fields": [
+        {"name": "page", "type": "integer", "description": "Current page number"},
+        {"name": "limit", "type": "integer", "description": "Records per page"},
+        {"name": "total_records", "type": "integer", "description": "Total number of records"},
+        {"name": "orders", "type": "array", "description": "List of orders", "nested": [
+          {"name": "order_id", "type": "string"},
+          {"name": "customer_id", "type": "string"},
+          {"name": "created_at", "type": "string"},
+          {"name": "status", "type": "enum"},
+          {"name": "payment_status", "type": "string"},
+          {"name": "total", "type": "number"},
+          {"name": "currency", "type": "string"}
+        ]}
+      ],
+      "notes": "Use filters to scope results. Pagination required if more than 50 records may be returned."
+    },
+    {
+      "id": "get_customer",
+      "method": "GET",
+      "path": "/customers/{customer_id}",
+      "purpose": "Retrieves basic information about a specific customer.",
+      "path_params": [
+        {
+          "name": "customer_id",
+          "required": true,
+          "type": "string",
+          "description": "Unique customer identifier",
+          "example": "CUS-3021"
+        }
+      ],
+      "query_params": [],
+      "response_fields": [
+        {"name": "customer_id", "type": "string", "description": "Customer identifier"},
+        {"name": "name", "type": "string", "description": "Customer name"},
+        {"name": "email", "type": "string", "description": "Customer email"},
+        {"name": "customer_since", "type": "string", "description": "When the customer was created"}
+      ],
+      "notes": "Only retrieve customer information required for the stated business purpose (data minimization)."
+    },
+    {
+      "id": "get_order_delivery",
+      "method": "GET",
+      "path": "/orders/{order_id}/delivery",
+      "purpose": "Retrieves delivery information for a specific order.",
+      "path_params": [
+        {
+          "name": "order_id",
+          "required": true,
+          "type": "string",
+          "description": "Unique ID of the order",
+          "example": "ORD-10452"
+        }
+      ],
+      "query_params": [],
+      "response_fields": [
+        {"name": "order_id", "type": "string", "description": "Order identifier"},
+        {"name": "delivery_status", "type": "string", "description": "Delivery status (e.g. shipped)"},
+        {"name": "carrier", "type": "string", "description": "Carrier name"},
+        {"name": "tracking_reference", "type": "string", "description": "Tracking reference"},
+        {"name": "estimated_delivery", "type": "string", "description": "Estimated delivery date"}
+      ],
+      "notes": "Does not include a delivery address field."
+    }
+  ],
+  "enums": {
+    "order_status": {
+      "values": ["pending", "processing", "ready_for_shipping", "shipped", "completed", "cancelled"],
+      "descriptions": {
+        "pending": "Order has been created but has not entered processing",
+        "processing": "Order is currently being prepared",
+        "ready_for_shipping": "Order is ready to be dispatched",
+        "shipped": "Order has been dispatched",
+        "completed": "Order has been completed",
+        "cancelled": "Order has been cancelled"
+      }
+    }
+  },
+  "errors": [
+    {"status": 200, "meaning": "Request successful", "guidance": "Continue processing the returned information"},
+    {"status": 400, "meaning": "Invalid request", "guidance": "Check the request structure and parameters"},
+    {"status": 401, "meaning": "Authentication failed", "guidance": "Check the API credentials"},
+    {"status": 403, "meaning": "Access denied", "guidance": "Check whether the application has permission to access the resource"},
+    {"status": 404, "meaning": "Resource not found", "guidance": "Check the requested order, customer, or endpoint"},
+    {"status": 429, "meaning": "Too many requests", "guidance": "Reduce request frequency and retry after an appropriate delay"},
+    {"status": 500, "meaning": "Server error", "guidance": "Record the error and retry later or send for technical review"},
+    {"status": 503, "meaning": "Service unavailable", "guidance": "Pause processing and retry later"}
+  ],
+  "error_handling_rules": [
+    "Repeated failed requests should not continue indefinitely.",
+    "Authentication failures (401) require developer review.",
+    "Rate-limit errors (429) must not result in immediate repeated requests.",
+    "Missing records (404) should not cause the complete integration process to fail unnecessarily.",
+    "Server-side errors (500) should be recorded for investigation.",
+    "503 means pause processing and retry later."
+  ],
+  "access_rules": [
+    "Only approved applications may access the API.",
+    "Use fictional credentials or mocked API responses for this project.",
+    "Only read-only GET operations are included.",
+    "Retrieve only the customer information required for the stated business purpose.",
+    "Credentials must not be exposed in project outputs.",
+    "The project must not create, update, or delete real orders.",
+    "A developer must review an integration plan before implementation."
+  ]
+}

@@ -1,0 +1,589 @@
+{
+  "name": "seventeen",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "copilot-trigger",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        208
+      ],
+      "id": "d94c8727-4961-4144-8e75-6ad366900b87",
+      "name": "Webhook",
+      "webhookId": "copilot-trigger"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "6912989a-021c-41dd-b707-b393f49aaa41",
+      "name": "When chat message received",
+      "webhookId": "copilot-trigger-chat"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{(function(){ const b = $json.body; return (b && b.chatInput) ? b.chatInput : ($json.chatInput || ''); })()}}",
+        "options": {
+          "systemMessage": "You are a requirements analyst for the ConnectX Orders API support team. A developer request arrives as free text. You convert it into a structured JSON description of the integration need. You must ONLY reflect what is actually stated — never add your own assumptions, fields, filters, dates, frequencies, or destinations.\n\nReturn JSON with EXACTLY these keys:\n{\n  \"entities\": [\"orders\"],\n  \"data_fields\": [\"order_id\", \"total amount\", \"payment status\"],\n  \"filters\": [{\"field\": \"created_at\", \"value\": \"previous day\", \"operator\": \"between\"}],\n  \"frequency\": \"daily\",\n  \"destination\": \"Reporting System\",\n  \"scope\": \"single_record\"\n}\n\nSemantics:\n- entities: the business objects explicitly involved (orders, customers, delivery). Only include what the request mentions.\n- data_fields: the specific data items the requester explicitly wants returned. Do NOT add fields not requested.\n- filters: constraints the requester explicitly states (date ranges, status, customer id).\n  For a date range, use operator \"between\" and field \"created_at\" with a value describing the window (e.g. \"previous day\", \"last week\", \"2026-01-01 to 2026-01-31\").\n  Only create a filter if the request mentions that constraint.\n- frequency: daily / every 2 hours / every hour / weekly / on demand / not stated.\n- destination: where the data will be used, ONLY if explicitly stated, else an empty string.\n- scope: single_record (one known id), multiple_records (a query/list), or summary_or_report (aggregate of many records).\n\nRULES:\n- If a concrete date is given, represent it in YYYY-MM-DD format.\n- If nothing is stated for a field, use an empty list/string or \"not stated\" for frequency.\n- Do NOT invent, infer, or add requirements that were not provided by the user."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        192,
+        208
+      ],
+      "id": "c1abc728-9908-4011-a82f-9948c3b6db03",
+      "name": "Agent 1: Requirement Interpreter"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"entities\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"data_fields\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"filters\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"field\": { \"type\": \"string\" },\n          \"value\": { \"type\": \"string\" },\n          \"operator\": { \"type\": \"string\" }\n        }\n      }\n    },\n    \"frequency\": { \"type\": \"string\" },\n    \"destination\": { \"type\": \"string\" },\n    \"scope\": { \"type\": \"string\", \"enum\": [\"single_record\", \"multiple_records\", \"summary_or_report\"] }\n  }\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        320,
+        448
+      ],
+      "id": "4bb4bdbf-2169-4db4-9ae1-72f813b02579",
+      "name": "Structured Output Parser (Interpreter)"
+    },
+    {
+      "parameters": {
+        "model": "mistral",
+        "options": {
+          "numCtx": 10000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        192,
+        448
+      ],
+      "id": "c00700b5-14b1-40f9-b499-ec59b363ed74",
+      "name": "Ollama Mistral (Interpreter)",
+      "credentials": {
+        "ollamaApi": {
+          "id": "w8RIdMwkIk33Zo6Q",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Agent 2: Documentation Grounding (DETERMINISTIC) ----\n// Strictly match the requirement ONLY against documented endpoints, params,\n// and response fields. Unsupported/missing items are explicitly marked.\n// Reads Agent 1 from top-level .json (robust to { output: \"<json>\" } shapes).\n\nconst KB = {\n  \"api\": {\n    \"name\": \"ConnectX Orders API\",\n    \"base_url\": \"https://api.connectx.demo/v1\",\n    \"auth\": { \"type\": \"api_key\", \"header_name\": \"X-API-Key\" },\n    \"rate_limit\": \"Maximum 100 requests per minute\",\n    \"pagination\": \"List Orders returns max 50 records per request\"\n  },\n  \"endpoints\": [\n    {\n      \"id\": \"get_single_order\", \"method\": \"GET\", \"path\": \"/orders/{order_id}\",\n      \"path_params\": [{\"name\": \"order_id\", \"required\": true}],\n      \"query_params\": [],\n      \"response_fields\": [\n        {\"name\": \"order_id\"}, {\"name\": \"customer_id\"}, {\"name\": \"created_at\"},\n        {\"name\": \"status\"}, {\"name\": \"payment_status\"}, {\"name\": \"total\"},\n        {\"name\": \"currency\"}, {\"name\": \"items\", \"nested\": [\n          {\"name\": \"product_id\"}, {\"name\": \"name\"}, {\"name\": \"quantity\"}, {\"name\": \"unit_price\"}\n        ]}\n      ]\n    },\n    {\n      \"id\": \"list_orders\", \"method\": \"GET\", \"path\": \"/orders\",\n      \"path_params\": [],\n      \"query_params\": [\n        {\"name\": \"start_date\"}, {\"name\": \"end_date\"}, {\"name\": \"status\"},\n        {\"name\": \"customer_id\"}, {\"name\": \"page\"}, {\"name\": \"limit\"}\n      ],\n      \"response_fields\": [\n        {\"name\": \"page\"}, {\"name\": \"limit\"}, {\"name\": \"total_records\"},\n        {\"name\": \"orders\", \"nested\": [\n          {\"name\": \"order_id\"}, {\"name\": \"customer_id\"}, {\"name\": \"created_at\"},\n          {\"name\": \"status\"}, {\"name\": \"payment_status\"}, {\"name\": \"total\"}, {\"name\": \"currency\"}\n        ]}\n      ]\n    },\n    {\n      \"id\": \"get_customer\", \"method\": \"GET\", \"path\": \"/customers/{customer_id}\",\n      \"path_params\": [{\"name\": \"customer_id\", \"required\": true}],\n      \"query_params\": [],\n      \"response_fields\": [\n        {\"name\": \"customer_id\"}, {\"name\": \"name\"}, {\"name\": \"email\"}, {\"name\": \"customer_since\"}\n      ]\n    },\n    {\n      \"id\": \"get_order_delivery\", \"method\": \"GET\", \"path\": \"/orders/{order_id}/delivery\",\n      \"path_params\": [{\"name\": \"order_id\", \"required\": true}],\n      \"query_params\": [],\n      \"response_fields\": [\n        {\"name\": \"order_id\"}, {\"name\": \"delivery_status\"}, {\"name\": \"carrier\"},\n        {\"name\": \"tracking_reference\"}, {\"name\": \"estimated_delivery\"}\n      ]\n    }\n  ]\n};\n\n// Robust read: handles { output: \"<json string>\" } | { output: <object> } | plain json\nfunction unwrap(nodeName) {\n  const item = $('' + nodeName).first().json;\n  if (item && typeof item === 'object') {\n    if (typeof item.output === 'string') {\n      const s = item.output.trim();\n      try { return JSON.parse(s.replace(/^```(?:json)?\\s*/, '').replace(/```$/gm, '')); } catch (e) {\n        const start = s.indexOf('{');\n        const end = s.lastIndexOf('}');\n        if (start === -1 || end === -1) return {};\n        try { return JSON.parse(s.slice(start, end + 1)); } catch (e2) { return {}; }\n      }\n    }\n    if (item.output && typeof item.output === 'object') return item.output;\n    return item;\n  }\n  return item || {};\n}\n\nconst parsed = unwrap('Agent 1: Requirement Interpreter') || {};\nconst dataFields = parsed.data_fields || [];\nconst filterFields = (parsed.filters || []).map(f => f.field).filter(Boolean);\nconst requested = [...new Set([...dataFields, ...filterFields])];\n\n// Documented field names (flattened across all endpoints)\nfunction flatten(ep) {\n  const out = [];\n  for (const f of (ep.response_fields || [])) {\n    out.push(f.name);\n    for (const n of (f.nested || [])) out.push(n.name);\n  }\n  return out;\n}\nfunction allDocFields() {\n  const out = new Set();\n  for (const ep of KB.endpoints) for (const n of flatten(ep)) out.add(n);\n  return out;\n}\n\nfunction normalize(s) {\n  return String(s).toLowerCase().trim().replace(/_/g, ' ').split(/\\s+/).join(' ');\n}\nfunction bigrams(s) {\n  const str = ' ' + s + ' ';\n  const out = new Set();\n  for (let i = 0; i < str.length - 1; i++) out.add(str.substring(i, i + 2));\n  return out;\n}\nfunction similarity(a, b) {\n  const A = bigrams(a), B = bigrams(b);\n  if (A.size === 0 || B.size === 0) return 0;\n  let inter = 0;\n  for (const g of A) if (B.has(g)) inter++;\n  return (2 * inter) / (A.size + B.size);\n}\n\nconst SYNONYMS = {\n  \"order id\": \"order_id\", \"order number\": \"order_id\", \"order\": \"order_id\",\n  \"customer id\": \"customer_id\", \"customer number\": \"customer_id\", \"customer\": \"customer_id\",\n  \"date\": \"created_at\", \"order date\": \"created_at\", \"created date\": \"created_at\", \"creation date\": \"created_at\",\n  \"completed date\": \"created_at\", \"completion date\": \"created_at\",\n  \"status\": \"status\", \"order status\": \"status\", \"order state\": \"status\",\n  \"payment status\": \"payment_status\",\n  \"total amount\": \"total\", \"order total\": \"total\", \"total\": \"total\", \"amount\": \"total\",\n  \"items\": \"items\", \"delivery status\": \"delivery_status\",\n  \"delivered date\": null, \"delivery address\": null, \"shipping address\": null,\n  \"name\": \"name\", \"email\": \"email\",\n  \"unit price\": \"unit_price\", \"product id\": \"product_id\", \"quantity\": \"quantity\"\n};\n\nfunction resolve(requestedName) {\n  const norm = normalize(requestedName);\n  if (norm in SYNONYMS) {\n    const val = SYNONYMS[norm];\n    if (val === null) return [null, 'not a documented response field'];\n    return [val, val !== norm ? `mapped '${requestedName}' to documented field '${val}'` : 'exact synonym match'];\n  }\n  let best = null, bestScore = 0;\n  for (const name of allDocFields()) {\n    const score = similarity(norm, normalize(name));\n    if (score > bestScore) { best = name; bestScore = score; }\n  }\n  if (best !== null && bestScore >= 0.85) return [best, `fuzzy match (${bestScore.toFixed(2)}): '${best}'`];\n  return [null, 'no documented response field matches'];\n}\n\nconst mappings = [];\nconst unsupported = [];\nconst ambiguities = [];\n\nfor (const name of requested) {\n  const [doc, note] = resolve(name);\n  mappings.push({ requested: name, documented: doc, matched: doc !== null, note });\n  if (doc === null) {\n    unsupported.push(name);\n  } else if (name !== doc) {\n    ambiguities.push(`Requested '${name}' is not a documented field; mapped to documented field '${doc}'.`);\n  }\n}\n\nconst supported = new Set(mappings.filter(m => m.matched && m.documented).map(m => m.documented));\n\nconst scored = [];\nfor (const ep of KB.endpoints) {\n  const fields = new Set(flatten(ep));\n  const hits = [...supported].filter(f => fields.has(f));\n  scored.push({ count: hits.length, ep, fields });\n}\nscored.sort((a, b) => b.count - a.count);\n\nconst matched = [];\nfor (const { count, ep, fields } of scored) {\n  if (count === 0) continue;\n  const epMappings = mappings.filter(m => m.matched && fields.has(m.documented));\n  matched.push({\n    endpoint_id: ep.id,\n    method: ep.method,\n    path: ep.path,\n    relevance: `exposes ${count} requested field(s): ${[...fields].filter(f => supported.has(f)).join(', ')}`,\n    field_mappings: epMappings,\n    unsupported_fields: [...unsupported]\n  });\n}\n\nconst notes = [];\nif (unsupported.length) notes.push('Unsupported field(s): ' + unsupported.join(', '));\nif (ambiguities.length) notes.push(...ambiguities);\n\nreturn [{ json: { matched_endpoints: matched, unsupported_fields: unsupported, ambiguities, notes } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        432,
+        16
+      ],
+      "id": "e8da8294-48f0-48b9-a36a-2d1e11319a4c",
+      "name": "Agent 2: Documentation Grounding"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Parsed requirement:\n{{ JSON.stringify($('Agent 1: Requirement Interpreter').first().json) }}\n\nVerified endpoint matches (ONLY these endpoints/params/fields are allowed):\n{{ JSON.stringify($json) }}\n\nGrounded unsupported fields (do not put these in expected_fields):\n{{ JSON.stringify($json.unsupported_fields || []) }}",
+        "options": {
+          "systemMessage": "You are an API integration designer for the ConnectX Orders API. You are given:\n1) a parsed developer requirement, and\n2) verified endpoint matches from Documentation Grounding (your ONLY source of API truth).\n\nDesign the concrete API call. Return JSON with EXACTLY these keys:\n{\n  \"endpoint_id\": \"list_orders\",\n  \"method\": \"GET\",\n  \"path\": \"/orders\",\n  \"params\": [\n    {\"name\": \"status\", \"location\": \"query\", \"value\": \"completed\",\n     \"required\": false, \"source\": \"requirement: completed orders\"}\n  ],\n  \"expected_fields\": [\"order_id\", \"total\", \"payment_status\"],\n  \"pagination_plan\": \"... or 'not required'\",\n  \"justification\": \"one short paragraph explaining this call design\"\n}\n\nSTRICT RULES:\n- endpoint_id MUST be one of the endpoint_id values listed in the grounding result. Do not pick any other id.\n- path MUST match the documented path for that endpoint (use placeholders like {order_id} exactly as documented).\n- params MAY ONLY be documented parameter names for that endpoint, AND only include a parameter when the user's requirement actually needs it. Example: the documented query params for list_orders are start_date, end_date, status, customer_id, page, limit.\n- NEVER invent, infer, or add parameters such as start_date, sort, or any other name — unless the requirement explicitly calls for it (e.g. \"previous day\" means start_date/end_date, \"completed orders\" means status=completed, a named customer means customer_id). Only add params you can justify from the requirement OR mark unknown values as \"to-be-filled\" for params that are genuinely required by the requirement but whose value is not yet known.\n- expected_fields MUST be documented response fields of that endpoint. Do NOT include invented fields.\n- If n8n's grounding says a field is unsupported, do NOT put it in expected_fields — it belongs in the justification as an unsupported item.\n- If the requirement needs records that may exceed 50 per page, set pagination_plan to \"Paginate with page/limit up to 50\"."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        544,
+        208
+      ],
+      "id": "85ece0c3-bca9-4b2b-bd5c-0da0004e5b22",
+      "name": "Agent 3: Integration Designer"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"endpoint_id\": { \"type\": \"string\" },\n    \"method\": { \"type\": \"string\" },\n    \"path\": { \"type\": \"string\" },\n    \"params\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"name\": { \"type\": \"string\" },\n          \"location\": { \"type\": \"string\", \"enum\": [\"path\", \"query\", \"header\"] },\n          \"value\": { \"type\": \"string\" },\n          \"required\": { \"type\": \"boolean\" },\n          \"source\": { \"type\": \"string\" }\n        }\n      }\n    },\n    \"expected_fields\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"pagination_plan\": { \"type\": \"string\" },\n    \"justification\": { \"type\": \"string\" }\n  }\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        688,
+        448
+      ],
+      "id": "9a56ed8b-451d-40d5-b0ed-a64d91e8ef07",
+      "name": "Structured Output Parser (Designer)"
+    },
+    {
+      "parameters": {
+        "model": "mistral",
+        "options": {
+          "numCtx": 10000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        544,
+        448
+      ],
+      "id": "0abd95d0-fc81-4199-ae28-0e8587002e76",
+      "name": "Ollama Mistral (Designer)",
+      "credentials": {
+        "ollamaApi": {
+          "id": "w8RIdMwkIk33Zo6Q",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Gate Validation (after Agent 3: Integration Designer) ----\n// ENFORCES documentation grounding: never falls back, never invents endpoints.\n// Keeps only documented params; ADDS documented params only when the requirement\n// explicitly needs them (dates for previous-day, status, customer scope).\n// Any unsupported field from grounding is passed through as unsupported_fields\n// so later agents cannot ignore it.\n\nconst KB_ENDPOINTS = [\n  { id: 'get_single_order', method: 'GET', path: '/orders/{order_id}',\n    path_params: ['order_id'], query_params: [] },\n  { id: 'list_orders', method: 'GET', path: '/orders',\n    path_params: [], query_params: ['start_date','end_date','status','customer_id','page','limit'] },\n  { id: 'get_customer', method: 'GET', path: '/customers/{customer_id}',\n    path_params: ['customer_id'], query_params: [] },\n  { id: 'get_order_delivery', method: 'GET', path: '/orders/{order_id}/delivery',\n    path_params: ['order_id'], query_params: [] }\n];\n\nfunction grab(nodeName) {\n  const item = $(nodeName).first().json;\n  if (item && typeof item === 'object') {\n    if (typeof item.output === 'string') {\n      const s = item.output.trim();\n      try { return JSON.parse(s); } catch (e) {}\n      const fence = s.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n      if (fence) { try { return JSON.parse(fence[1].trim()); } catch (e2) {} }\n      const start = s.indexOf('{');\n      const end = s.lastIndexOf('}');\n      if (start > -1 && end > start) {\n        try { return JSON.parse(s.slice(start, end + 1)); } catch (e3) {}\n      }\n      return s;\n    }\n    if (item.output && typeof item.output === 'object') return item.output;\n    return item;\n  }\n  return item;\n}\n\nfunction isoDaysAgo(n) {\n  const d = new Date();\n  d.setDate(d.getDate() - n);\n  return d.toISOString().slice(0, 10);\n}\n\n// 1. Grounded matches from Agent 2. NO fallback: if grounding matched nothing,\n//    the design cannot be grounded and the gate REJECTS it.\nconst grounding = grab('Agent 2: Documentation Grounding') || {};\nconst groundedList = (grounding.matched_endpoints || []).map(e => e.endpoint_id);\nconst validEpIds = new Set(groundedList);\nconst passThroughUnsupported = grounding.unsupported_fields || [];\n\nif (groundedList.length === 0) {\n  throw new Error('Gate rejected: Documentation Grounding matched no endpoints; cannot ground the design.');\n}\n\n// 2. Design from Agent 3.\nconst design = grab('Agent 3: Integration Designer') || {};\n\n// 3. Endpoint id: only exact grounded matches allowed.\nlet endpointId = design.endpoint_id || design.endpoint || '';\nif (!validEpIds.has(endpointId)) {\n  endpointId = groundedList.find(id => endpointId.includes(id)) || '';\n}\nif (!validEpIds.has(endpointId)) {\n  throw new Error(`Gate rejected: endpoint '${endpointId}' not in grounded matches [${groundedList.join(', ')}]`);\n}\n\n// 4. Keep only params the knowledge base documents for that endpoint.\nconst ep = KB_ENDPOINTS.find(e => e.id === endpointId);\nconst validQuery = new Set(ep ? ep.query_params : []);\nconst validPath = new Set(ep ? ep.path_params : []);\nconst filteredParams = (design.params || []).filter(p => {\n  if (p.location === 'query') return validQuery.has(p.name);\n  if (p.location === 'path') return validPath.has(p.name);\n  return false; // header/invented params are dropped\n});\n\n// 5. ADD documented params the requirement explicitly needs (from Agent 1).\nconst parsed = grab('Agent 1: Requirement Interpreter') || {};\nconst requirementText = [\n  parsed.business_requirement || '',\n  (parsed.filters || []).map(f => `${f.field}: ${f.value}`).join(' '),\n  parsed.entities ? parsed.entities.join(' ') : ''\n].join(' ').toLowerCase();\n\nconst wantsPreviousDay = /previous day|yesterday|last 24|past day|prior day|last day/.test(requirementText);\nconst wantsDateRange = /date range|between|created_at|created date|creation date/.test(requirementText);\nconst statusFilter = (parsed.filters || []).find(f => /status/.test(String(f.field || '').toLowerCase()));\nconst customerFilter = (parsed.filters || []).find(f => /customer/i.test(String(f.field || '').toLowerCase()));\n\nconst hasQuery = name => filteredParams.some(p => p.name === name);\n// Fill an existing to-be-filled param when the requirement gives us the value.\nfunction fillParam(name, value, source) {\n  const p = filteredParams.find(x => x.name === name);\n  if (p) {\n    p.value = value;\n    p.source = source;\n  } else {\n    filteredParams.push({ name, location: 'query', value, required: false, source });\n  }\n}\n\nif (ep && ep.id === 'list_orders') {\n  if (/completed|finished/.test(requirementText) || (statusFilter && String(statusFilter.value || '').toLowerCase() === 'completed')) {\n    fillParam('status', 'completed', 'parsed requirement');\n  } else if (statusFilter && statusFilter.value) {\n    fillParam('status', String(statusFilter.value).toLowerCase(), 'parsed requirement');\n  }\n  // Dates: only set a concrete value when the requirement makes it determinable.\n  if (wantsPreviousDay) {\n    const y = isoDaysAgo(1); // YYYY-MM-DD\n    fillParam('start_date', y, 'previous day');\n    fillParam('end_date', y, 'previous day');\n  } else if (wantsDateRange) {\n    // User will pick the range at runtime -> keep as explicit to-be-filled review item\n    // (documented param name; value is a developer review confirmation).\n    if (!hasQuery('start_date')) filteredParams.push({ name: 'start_date', location: 'query', value: 'to-be-filled', required: false, source: 'selected date range' });\n    if (!hasQuery('end_date')) filteredParams.push({ name: 'end_date', location: 'query', value: 'to-be-filled', required: false, source: 'selected date range' });\n  }\n  if (customerFilter && customerFilter.value) {\n    fillParam('customer_id', String(customerFilter.value), 'parsed requirement');\n  }\n}\n\n// 6. expected_fields: normalize names (customer -> customer_id, total amount -> total,\n//    date -> created_at, etc.), then keep only documented names for this endpoint.\nconst FIELD_SYNONYMS = {\n  'customer': 'customer_id', 'customer id': 'customer_id', 'customer number': 'customer_id',\n  'date': 'created_at', 'created date': 'created_at', 'creation date': 'created_at',\n  'order date': 'created_at', 'completed date': 'created_at', 'completion date': 'created_at',\n  'order status': 'status', 'order state': 'status',\n  'order total': 'total', 'total amount': 'total', 'amount': 'total',\n  'payment status': 'payment_status',\n  'order': 'order_id', 'order number': 'order_id', 'order id': 'order_id',\n  'delivery status': 'delivery_status',\n  'unit price': 'unit_price', 'product id': 'product_id'\n};\nfunction normField(name) {\n  const n = String(name).toLowerCase().trim().replace(/_/g, ' ').split(/\\s+/).map(s => s.trim()).join(' ');\n  return FIELD_SYNONYMS[n] || String(name);\n}\nconst docFields = {\n  get_single_order: ['order_id','customer_id','created_at','status','payment_status','total','currency','items'],\n  list_orders: ['page','limit','total_records','orders','order_id','customer_id','created_at','status','payment_status','total','currency'],\n  get_customer: ['customer_id','name','email','customer_since'],\n  get_order_delivery: ['order_id','delivery_status','carrier','tracking_reference','estimated_delivery']\n};\nlet expectedFields = (design.expected_fields || []).map(normField);\nexpectedFields = [...new Set(expectedFields)];\nexpectedFields = expectedFields.filter(f => (docFields[endpointId] || []).includes(f));\n\nconst final_ = {\n  ...design,\n  endpoint_id: endpointId,\n  params: filteredParams,\n  expected_fields: expectedFields,\n  unsupported_fields: passThroughUnsupported,\n  gate_grounded: true\n};\n\nreturn [{ json: final_ }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        208
+      ],
+      "id": "71c4ad9c-0544-48d4-9aff-ba158d083f46",
+      "name": "Gate Validation"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Agent 4: Constraint Engine (DETERMINISTIC) ----\n// Applies ONLY the documented constraints: X-API-Key auth, 100 req/min rate\n// limit, page/limit max 50 on List Orders, and documented error codes.\n// Data minimization = only the fields the plan will actually request.\n\nconst RATE_LIMIT_PER_MIN = 100;   // from docs\nconst PAGE_LIMIT = 50;            // from docs\nconst DOC_ERRORS = [400, 401, 403, 404, 429, 500, 503]; // documented codes\nconst FREQ_CALLS = { 'daily': 2, 'every 2 hours': 12, 'every hour': 24, 'weekly': 2, 'on demand': 1, 'not stated': 2 };\n\nfunction grab(nodeName) {\n  const item = $(nodeName).first().json;\n  if (item && typeof item === 'object') {\n    if (typeof item.output === 'string') {\n      const s = item.output.trim();\n      try { return JSON.parse(s.replace(/```(?:json)?\\s*/gm, '').replace(/```$/gm, '')); } catch (e) {\n        const start = s.indexOf('{');\n        const end = s.lastIndexOf('}');\n        if (start === -1 || end === -1) return {};\n        try { return JSON.parse(s.slice(start, end + 1)); } catch (e2) { return {}; }\n      }\n    }\n    if (item.output && typeof item.output === 'object') return item.output;\n    return item;\n  }\n  return item || {};\n}\n\nconst parsed = grab('Agent 1: Requirement Interpreter') || {};\nconst design = grab('Gate Validation') || {}; // already grounded\n\nconst frequency = (parsed.frequency || 'not stated').toLowerCase();\nconst scope = parsed.scope || 'single_record';\nconst endpointId = design.endpoint_id || '';\n\nconst paginationNeeded = endpointId === 'list_orders' && scope !== 'single_record';\n\n// Auth: documented X-API-Key (generic instructions only; never a credential).\nconst auth = {\n  type: 'api_key',\n  header_name: 'X-API-Key',\n  call: \"Include header 'X-API-Key: <key>' on every request. Key is provisioned by ConnectX; never hardcode or expose it.\"\n};\n\n// Rate limit risk based on documented 100 req/min ceiling.\nconst callsPerMin = FREQ_CALLS[frequency] || 2;\nlet rate_limit_risk = 'low';\nif (callsPerMin * 1.5 >= RATE_LIMIT_PER_MIN || frequency === 'every 2 hours') rate_limit_risk = 'medium';\nif (frequency === 'every hour' && paginationNeeded) rate_limit_risk = 'high';\n\n// Relevant error codes chosen only from the documented set.\nconst relevant = [401];\nif (endpointId === 'get_single_order' || endpointId === 'get_customer' || endpointId === 'get_order_delivery') relevant.push(400, 404);\nif (paginationNeeded) relevant.push(429);\nif (scope === 'multiple_records' || scope === 'summary_or_report') relevant.push(429);\nrelevant.push(500, 503);\nconst relevant_errors = [...new Set(relevant)].filter(c => DOC_ERRORS.includes(c)).sort();\n\nconst blockers = [];\nif (paginationNeeded && !design.pagination_plan) {\n  blockers.push('Pagination: List Orders returns max 50 records per request; plan must page (page/limit).');\n}\n\nconst risks = [];\nif (frequency === 'every hour' && paginationNeeded) {\n  risks.push('Hourly full sync with pagination risks exceeding the documented 100 req/min rate limit.');\n}\nif (design.params && design.params.some(p => p.name === 'start_date' || p.name === 'end_date')\n    && !design.params.every(p => !['start_date','end_date'].includes(p.name) || /^\\d{4}-\\d{2}-\\d{2}$/.test(p.value))) {\n  risks.push('Dates must be provided in YYYY-MM-DD format.');\n}\n\n// Data minimization: compare requested fields vs all documented fields.\nconst ALL_DOC_FIELDS = {\n  get_single_order: ['order_id','customer_id','created_at','status','payment_status','total','currency','items'],\n  list_orders: ['page','limit','total_records','orders','order_id','customer_id','created_at','status','payment_status','total','currency'],\n  get_customer: ['customer_id','name','email','customer_since'],\n  get_order_delivery: ['order_id','delivery_status','carrier','tracking_reference','estimated_delivery']\n};\nconst requestedFields = (design.expected_fields || []);\nconst allFields = ALL_DOC_FIELDS[endpointId] || [];\nconst data_minimization = `Fetch only the ${requestedFields.length} needed field(s) (${requestedFields.join(', ') || 'none'}) of ${allFields.length} documented fields for ${endpointId}.`;\n\nreturn [{ json: {\n  auth,\n  auth_required: true, auth_header: 'X-API-Key',\n  pagination_needed: paginationNeeded, pagination_limit: PAGE_LIMIT,\n  rate_limit_per_min: RATE_LIMIT_PER_MIN,\n  rate_limit_risk,\n  relevant_errors: relevant_errors,\n  data_minimization,\n  blockers,\n  risks\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        992,
+        208
+      ],
+      "id": "a7dcf5b1-21ae-44de-8d5e-f1a014ad158e",
+      "name": "Agent 4: Constraint Engine"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=PARSED REQUIREMENT:\n{{ JSON.stringify($('Agent 1: Requirement Interpreter').first().json) }}\n\nDOCUMENTATION GROUNDING (must be respected):\n{{ JSON.stringify($('Agent 2: Documentation Grounding').first().json) }}\n\nAPI CALL DESIGN (already gate-verified against docs):\n{{ JSON.stringify($('Gate Validation').first().json) }}\n\nCONSTRAINT REPORT (from docs only):\n{{ JSON.stringify($json) }}",
+        "options": {
+          "systemMessage": "You are a senior developer who writes integration plans that another developer will review.\nYou are given: a parsed requirement, the grounded endpoint matches (Documentation Grounding), the API call design (Gate output, already verified against the docs), and the constraint report.\n\nProduce the final IntegrationPlan. Return JSON with EXACTLY these keys:\n{\n  \"requirement_summary\": \"one sentence restating the business need\",\n  \"recommended_endpoint\": \"GET /orders?status=completed&start_date=2026-09-15&end_date=2026-09-15\",\n  \"operation_steps\": [\"step 1...\", \"step 2...\", \"...\"],\n  \"authentication\": \"how the call is authenticated (X-API-Key header), without showing any credential\",\n  \"pagination\": \"pagination strategy if needed, else 'not required for this volume'\",\n  \"error_handling\": [\"how to handle the relevant errors\"],\n  \"data_minimization\": \"what is retrieved vs what is actually needed\",\n  \"limitations\": [\"honest limitations of this plan\"],\n  \"unsupported_requirements\": [\"anything the API docs cannot provide\"],\n  \"supported_requirements\": [\"everything the docs DO provide for this plan\"],\n  \"developer_review_checklist\": [\n     {\"requirement\": \"thing to verify\", \"reason\": \"why a human must confirm\"}\n  ]\n}\n\nSTRICT RULES:\n- recommended_endpoint MUST be built from the Gate design exactly: use gate.endpoint method+path and gate.params (name=value). Keep dates in YYYY-MM-DD format.\n- authentication, pagination, rate limits, and error codes MUST come from the constraint report and the docs only. Do NOT invent new constraints.\n- unsupported_requirements MUST list every field the grounding marked unsupported (gate.unsupported_fields). Never silently drop them.\n- limitations MUST include anything the API cannot do for this requirement.\n- developer_review_checklist MUST include items a human must verify (e.g. any param with value \"to-be-filled\", unsupported fields, credential handling).\n- Do NOT invent API functionality, fields, parameters, endpoints, credentials, or capabilities."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1168,
+        208
+      ],
+      "id": "109374f5-b939-4eda-8fac-9cb48538ae0f",
+      "name": "Agent 5: Plan Synthesizer"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"requirement_summary\": {\n      \"type\": \"string\"\n    },\n    \"recommended_endpoint\": {\n      \"type\": \"string\"\n    },\n    \"operation_steps\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    },\n    \"authentication\": {\n      \"type\": \"string\"\n    },\n    \"pagination\": {\n      \"type\": \"string\"\n    },\n    \"error_handling\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    },\n    \"data_minimization\": {\n      \"type\": \"string\"\n    },\n    \"limitations\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    },\n    \"unsupported_requirements\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    },\n    \"developer_review_checklist\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"requirement\": {\n            \"type\": \"string\"\n          },\n          \"reason\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    },\n    \"supported_requirements\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    }\n  }\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1312,
+        448
+      ],
+      "id": "f50082f9-f2b5-413c-baac-7868d0adfa8a",
+      "name": "Structured Output Parser (Synthesizer)"
+    },
+    {
+      "parameters": {
+        "model": "mistral",
+        "options": {
+          "numCtx": 10000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        1168,
+        448
+      ],
+      "id": "d1c683a0-4267-4757-8e66-3365abd580ed",
+      "name": "Ollama Mistral (Synthesizer)",
+      "credentials": {
+        "ollamaApi": {
+          "id": "w8RIdMwkIk33Zo6Q",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Verifier (after Agent 5: Plan Synthesizer) ----\n// Source of truth = the GATE output (endpoint_id, params, expected_fields).\n// grounded = true ONLY when every recommended endpoint, param, and field is\n// supported by the documentation. If ANY requested item is unsupported, the\n// plan is grounded:false and the problem is identified (the plan must surface\n// the unsupported item instead of ignoring it).\n\nconst KB = {\n  \"endpoints\": [\n    {\n      \"id\": \"get_single_order\", \"method\": \"GET\", \"path\": \"/orders/{order_id}\",\n      \"path_params\": [{\"name\": \"order_id\", \"required\": true}],\n      \"query_params\": [],\n      \"response_fields\": [\n        {\"name\": \"order_id\"}, {\"name\": \"customer_id\"}, {\"name\": \"created_at\"},\n        {\"name\": \"status\"}, {\"name\": \"payment_status\"}, {\"name\": \"total\"},\n        {\"name\": \"currency\"}, {\"name\": \"items\", \"nested\": [\n          {\"name\": \"product_id\"}, {\"name\": \"name\"}, {\"name\": \"quantity\"}, {\"name\": \"unit_price\"}\n        ]}\n      ]\n    },\n    {\n      \"id\": \"list_orders\", \"method\": \"GET\", \"path\": \"/orders\",\n      \"path_params\": [],\n      \"query_params\": [\n        {\"name\": \"start_date\"}, {\"name\": \"end_date\"}, {\"name\": \"status\"},\n        {\"name\": \"customer_id\"}, {\"name\": \"page\"}, {\"name\": \"limit\"}\n      ],\n      \"response_fields\": [\n        {\"name\": \"page\"}, {\"name\": \"limit\"}, {\"name\": \"total_records\"},\n        {\"name\": \"orders\", \"nested\": [\n          {\"name\": \"order_id\"}, {\"name\": \"customer_id\"}, {\"name\": \"created_at\"},\n          {\"name\": \"status\"}, {\"name\": \"payment_status\"}, {\"name\": \"total\"}, {\"name\": \"currency\"}\n        ]}\n      ]\n    },\n    {\n      \"id\": \"get_customer\", \"method\": \"GET\", \"path\": \"/customers/{customer_id}\",\n      \"path_params\": [{\"name\": \"customer_id\", \"required\": true}],\n      \"query_params\": [],\n      \"response_fields\": [\n        {\"name\": \"customer_id\"}, {\"name\": \"name\"}, {\"name\": \"email\"}, {\"name\": \"customer_since\"}\n      ]\n    },\n    {\n      \"id\": \"get_order_delivery\", \"method\": \"GET\", \"path\": \"/orders/{order_id}/delivery\",\n      \"path_params\": [{\"name\": \"order_id\", \"required\": true}],\n      \"query_params\": [],\n      \"response_fields\": [\n        {\"name\": \"order_id\"}, {\"name\": \"delivery_status\"}, {\"name\": \"carrier\"},\n        {\"name\": \"tracking_reference\"}, {\"name\": \"estimated_delivery\"}\n      ]\n    }\n  ]\n};\n\nfunction flatten(ep) {\n  const out = [];\n  for (const f of (ep.response_fields || [])) {\n    out.push(f.name);\n    for (const n of (f.nested || [])) out.push(n.name);\n  }\n  return out;\n}\n\nfunction endpointById(id) {\n  return KB.endpoints.find(e => e.id === id) || null;\n}\n\nfunction grab(nodeName) {\n  const item = $(nodeName).first().json;\n  if (item && typeof item === 'object') {\n    if (typeof item.output === 'string') {\n      const s = item.output.trim();\n      try { return JSON.parse(s.replace(/^```(?:json)?\\s*/gm, '').replace(/```$/gm, '')); } catch (e) {\n        const fence = s.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n        if (fence) { try { return JSON.parse(fence[1].trim()); } catch (e2) {} }\n        const start = s.indexOf('{');\n        const end = s.lastIndexOf('}');\n        if (start > -1 && end > start) {\n          try { return JSON.parse(s.slice(start, end + 1)); } catch (e3) {}\n        }\n        return {};\n      }\n    }\n    if (item.output && typeof item.output === 'object') return item.output;\n    return item;\n  }\n  return item || {};\n}\n\nconst gate = grab('Gate Validation') || {};\nconst grounding = grab('Agent 2: Documentation Grounding') || {};\nconst plan = grab('Agent 5: Plan Synthesizer') || {};\n\nconst checks = [];\nconst problems = [];\n\n// 0. Grounding must have matched something (later agents must not ignore no-match).\nconst groundedCount = (grounding.matched_endpoints || []).length;\nif (groundedCount === 0) {\n  checks.push({ item: 'grounding', checked_against: 'knowledge base', status: 'violation',\n    detail: 'Documentation Grounding matched no endpoints; later agents ignored this.' });\n  problems.push('Documentation Grounding matched no endpoints.');\n}\n\n// 0b. ANY requested item the docs do not support => grounded:false (identified).\nconst unsupported = grounding.unsupported_fields || [];\nconst planUnsupported = (plan.unsupported_requirements || []).map(String);\nfor (const u of unsupported) {\n  checks.push({ item: `unsupported item '${u}'`, checked_against: 'knowledge base', status: 'violation',\n    detail: `Requested item '${u}' is NOT supported by the documentation and must be reported as unsupported.` });\n  problems.push(`Unsupported item '${u}'.`);\n  if (!planUnsupported.some(p => p.toLowerCase().includes(String(u).toLowerCase()))) {\n    checks.push({ item: `unsupported item '${u}' surfaced`, checked_against: 'plan', status: 'violation',\n      detail: `Plan did not list '${u}' in unsupported_requirements.` });\n    problems.push(`Plan did not surface unsupported item '${u}'.`);\n  }\n}\n\n// 1. Endpoint: must be documented + grounded.\nconst gateEndpointId = gate.endpoint_id || '';\nconst gateEp = endpointById(gateEndpointId);\nif (!gateEp) {\n  checks.push({ item: 'endpoint', checked_against: 'knowledge base', status: 'violation',\n    detail: `Gate endpoint '${gateEndpointId}' is not in the ConnectX API documentation` });\n  problems.push(`Endpoint '${gateEndpointId}' is not documented.`);\n}\nconst epById = gateEp || { id: gateEndpointId, path_params: [], query_params: [], response_fields: [] };\n\n// 2. Params: documented only; required path params present; dates YYYY-MM-DD.\nconst providedPath = (gate.params || []).filter(p => p.location === 'path').map(p => p.name);\nfor (const req of (epById.path_params || [])) {\n  if (req.required && !providedPath.includes(req.name)) {\n    checks.push({ item: `path param ${req.name}`, checked_against: epById.id, status: 'violation',\n      detail: `required path parameter '${req.name}' is missing from the plan` });\n    problems.push(`Missing required path param '${req.name}'.`);\n  }\n}\n\nconst allowedQuery = new Set((epById.query_params || []).map(p => p.name));\nfor (const p of (gate.params || [])) {\n  if (p.location === 'query' && !allowedQuery.has(p.name)) {\n    checks.push({ item: `query param ${p.name}`, checked_against: epById.id, status: 'violation',\n      detail: `'${p.name}' is not a documented query parameter of ${epById.id}` });\n    problems.push(`Undocumented query param '${p.name}'.`);\n  }\n  if (p.name === 'start_date' || p.name === 'end_date') {\n    const raw = String(p.value || '').trim();\n    if (!raw || raw === 'to-be-filled') {\n      checks.push({ item: `query param ${p.name}`, checked_against: epById.id, status: 'warning',\n        detail: `'${p.name}' value is '${raw}' and must be filled with ${'YYYY-MM-DD'} at runtime` });\n    } else if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(raw)) {\n      checks.push({ item: `query param ${p.name}`, checked_against: epById.id, status: 'violation',\n        detail: `'${p.name}' must be YYYY-MM-DD, got '${raw}'` });\n      problems.push(`Date '${p.name}' not in YYYY-MM-DD.`);\n    }\n  }\n}\n\n// 3. Response fields: documented for the endpoint only.\nconst validFields = new Set(flatten(epById));\nfor (const f of (gate.expected_fields || [])) {\n  if (!validFields.has(f)) {\n    checks.push({ item: `response field ${f}`, checked_against: epById.id, status: 'violation',\n      detail: `'${f}' is not a documented response field of ${epById.id}` });\n    problems.push(`Response field '${f}' is not documented.`);\n  }\n}\n\n// 4. Agent 5 endpoint must agree with the Gate endpoint.\nconst planEpRaw = plan.recommended_endpoint || '';\nconst [method, ...rest] = planEpRaw.split(' ');\nconst pathStr = (rest.join(' ') || '').split('?')[0];\nconst planEp = KB.endpoints.find(e =>\n  e.method.toUpperCase() === String(method || '').toUpperCase() &&\n  e.path.replace(/\\//g, '') === (pathStr || '').replace(/\\//g, ''));\nif (planEpRaw) {\n  if (!planEp) {\n    checks.push({ item: 'plan endpoint', checked_against: 'knowledge base', status: 'violation',\n      detail: `Plan recommended '${planEpRaw}' which is not a documented endpoint` });\n    problems.push(`Plan endpoint '${planEpRaw}' not documented.`);\n  } else if (gateEp && planEp.id !== gateEp.id) {\n    checks.push({ item: 'endpoint agreement', checked_against: gateEp.id, status: 'violation',\n      detail: `Plan recommended ${planEp.id} but Gate selected ${gateEp.id}` });\n    problems.push(`Plan endpoint ${planEp.id} disagrees with Gate endpoint ${gateEp.id}.`);\n  }\n  const q = (planEpRaw.split('?')[1] || '').split('&').map(s => s.split('=')[0]).filter(Boolean);\n  const planAllowed = new Set((planEp ? planEp.query_params : []).map(p => p.name));\n  for (const qp of q) {\n    if (!planAllowed.has(qp)) {\n      checks.push({ item: `plan query param ${qp}`, checked_against: planEp ? planEp.id : '?', status: 'violation',\n        detail: `Plan used query param '${qp}' which is not documented for the endpoint` });\n      problems.push(`Plan query param '${qp}' is not documented.`);\n    }\n  }\n}\n\nconst grounded = problems.length === 0;\nlet summary = 'Every endpoint, parameter, and field in the plan is supported by the documentation.';\nif (!grounded) summary = `${checks.filter(c => c.status === 'violation').length} problem(s) found: ${problems.join(' ')}`;\n\nreturn [{ json: { checks, grounded, summary, problems } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        208
+      ],
+      "id": "c4dde1fc-127a-4042-b0bc-2de2c2adbd66",
+      "name": "Verifier"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "verifier-check",
+              "leftValue": "={{ $json.grounded }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1664,
+        208
+      ],
+      "id": "e08fe2bd-fa20-46df-b852-4ca9c25fb2e7",
+      "name": "IF Grounded"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "plan-build-1",
+              "name": "plan",
+              "value": "={{(function() {\n  const plan = (function(){ try { const x = $(\"Agent 5: Plan Synthesizer\").first().json; return (x && x.output && typeof x.output === \"string\") ? JSON.parse(x.output) : x; } catch(e){ return {}; } })() || {};\n  const gate = $(\"Gate Validation\").first().json || {};\n  const verifier = $(\"Verifier\").first().json || {};\n  const lines = [];\n  lines.push(\"CONNECTX INTEGRATION PLAN\");\n  lines.push(\"\");\n  lines.push(\"Requirement: \" + (plan.requirement_summary || \"-\"));\n  lines.push(\"Recommended endpoint: \" + (plan.recommended_endpoint || \"-\"));\n  lines.push(\"Query params: \" + ((gate.params || []).map(p => p.name + \"=\" + p.value).join(\"&\") || \"-\"));\n  lines.push(\"Authentication: \" + (plan.authentication || \"-\"));\n  lines.push(\"Pagination: \" + (plan.pagination || \"-\"));\n  lines.push(\"Expected fields: \" + ((gate.expected_fields || []).join(\", \") || \"-\"));\n  lines.push(\"\");\n  lines.push(\"Operation steps:\");\n  (plan.operation_steps || []).forEach(s => lines.push(\"  - \" + s));\n  lines.push(\"\");\n  lines.push(\"Error handling:\");\n  (plan.error_handling || []).forEach(s => lines.push(\"  - \" + s));\n  lines.push(\"\");\n  lines.push(\"Data minimization: \" + (plan.data_minimization || \"-\"));\n  lines.push(\"\");\n  const unsup = plan.unsupported_requirements || [];\n  lines.push(\"Unsupported by the API: \" + (unsup.length ? unsup.join(\"; \") : \"none\"));\n  lines.push(\"\");\n  const lim = plan.limitations || [];\n  lines.push(\"Limitations: \" + (lim.length ? lim.join(\"; \") : \"none\"));\n  lines.push(\"\");\n  const check = plan.developer_review_checklist || [];\n  lines.push(\"Developer review checklist:\");\n  check.forEach(c => lines.push(\"  - \" + (c.requirement || c) + \": \" + (c.reason || \"confirm\")));\n  lines.push(\"\");\n  lines.push(\"Verification: \" + (verifier.summary || \"-\") + \"  [grounded: \" + verifier.grounded + \"]\");\n  if (verifier.problems && verifier.problems.length) {\n    lines.push(\"\");\n    lines.push(\"Problems to resolve:\");\n    verifier.problems.forEach(p => lines.push(\"  - \" + p));\n  }\n  return lines.join(\"\\n\");\n})() }}",
+              "type": "string"
+            },
+            {
+              "id": "plan-build-2",
+              "name": "traces",
+              "value": "={{(function() {\n  const grab = (name) => { try { const x = $(name).first().json; return (x && x.output && typeof x.output === \"string\") ? JSON.parse(x.output) : x; } catch(e) { return {}; } };\n  const chatInput = (function(){\n    try { const w = $(\"Webhook\").first().json.body; if (w && w.chatInput) return w.chatInput; } catch(e) {}\n    try { const c = $(\"When chat message received\").first().json; if (c && c.chatInput) return c.chatInput; } catch(e2) {}\n    return \"\";\n  })();\n  return JSON.stringify([\n    { agent: \"Requirement Interpreter\", input: chatInput, output: grab(\"Agent 1: Requirement Interpreter\") },\n    { agent: \"Documentation Grounding\", output: grab(\"Agent 2: Documentation Grounding\") },\n    { agent: \"Integration Designer\", output: grab(\"Agent 3: Integration Designer\") },\n    { agent: \"Gate Validation\", output: grab(\"Gate Validation\") },\n    { agent: \"Constraint Engine\", output: grab(\"Agent 4: Constraint Engine\") },\n    { agent: \"Plan Synthesizer\", output: grab(\"Agent 5: Plan Synthesizer\") },\n    { agent: \"Verifier\", output: grab(\"Verifier\") }\n  ]);\n})() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        1888,
+        128
+      ],
+      "id": "5155edf6-062a-4353-8f0d-ed5f0913e394",
+      "name": "Build Final Response"
+    },
+    {
+      "parameters": {
+        "jsCode": "const hasChat = (function() {\n  try { const j = $('When chat message received').first().json; return !!(j && j.chatInput); } catch (e) { return false; }\n})();\nreturn [{ json: { ...$input.first().json, source: hasChat ? 'chat' : 'webhook' } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        16
+      ],
+      "id": "d66d6276-eed0-4911-bfb0-64181c3a9315",
+      "name": "Detect Trigger Source"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "source-is-chat",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2224,
+        208
+      ],
+      "id": "f4ba3459-24c1-4090-af22-16000d1ea61e",
+      "name": "IF Chat Trigger"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.plan }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2448,
+        0
+      ],
+      "id": "a9086bd2-c6b5-4a25-b571-26c9f2140df1",
+      "name": "Respond Chat Text"
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2208,
+        480
+      ],
+      "id": "c9f0502a-1eed-4a96-afbd-fecbc4127e5b",
+      "name": "Respond to Webhook"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Agent 1: Requirement Interpreter": {
+      "main": [
+        [
+          {
+            "node": "Agent 2: Documentation Grounding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 2: Documentation Grounding": {
+      "main": [
+        [
+          {
+            "node": "Agent 3: Integration Designer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 3: Integration Designer": {
+      "main": [
+        [
+          {
+            "node": "Gate Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate Validation": {
+      "main": [
+        [
+          {
+            "node": "Agent 4: Constraint Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 4: Constraint Engine": {
+      "main": [
+        [
+          {
+            "node": "Agent 5: Plan Synthesizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 5: Plan Synthesizer": {
+      "main": [
+        [
+          {
+            "node": "Verifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verifier": {
+      "main": [
+        [
+          {
+            "node": "IF Grounded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Grounded": {
+      "main": [
+        [
+          {
+            "node": "Build Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final Response": {
+      "main": [
+        [
+          {
+            "node": "Detect Trigger Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Trigger Source": {
+      "main": [
+        [
+          {
+            "node": "IF Chat Trigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Chat Trigger": {
+      "main": [
+        [
+          {
+            "node": "Respond Chat Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Mistral (Interpreter)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 1: Requirement Interpreter",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Mistral (Designer)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 3: Integration Designer",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Mistral (Synthesizer)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 5: Plan Synthesizer",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Agent 1: Requirement Interpreter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Agent 1: Requirement Interpreter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "5b0da664-4d66-4535-8318-293766a2751e",
+  "meta": {
+    "instanceId": "d0528f3d08413bdfa366df478f4834f06c29da23347ff30dbf0e5be7d115c409"
+  },
+  "nodeGroups": [],
+  "id": "iCgmmGTtqQ54yt6f",
+  "tags": []
+}
