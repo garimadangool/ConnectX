@@ -4,7 +4,8 @@ A multi-agent AI assistant that helps developers plan integrations with the Conn
 
 Five agents handle the steps: they parse the request, ground it in the docs, design the call, validate constraints, and verify the result, looping until the answer is grounded. It runs locally with n8n and Ollama (Mistral), so no cloud API is required.
 
-![Screenshot](docs/screenshot.png) <!-- add a screenshot of the n8n workflow or the React UI -->
+<img width="1905" height="916" alt="Screenshot 2026-09-17 133907" src="https://github.com/user-attachments/assets/62bc0be4-093e-4f98-88cb-a998bbcaa515" />
+
 
 ## Features
 
